@@ -3,7 +3,6 @@ from sqlalchemy import text
 
 from ..dependencies import DatabaseDep, SettingsDep
 from ..schemas.health import HealthResponse, ServiceStatus
-from ..services.ollama import OllamaClient
 
 router = APIRouter()
 
@@ -57,17 +56,6 @@ async def health_check(settings: SettingsDep, database: DatabaseDep) -> HealthRe
             services["database"] = ServiceStatus(status="healthy", message="Connected successfully")
     except Exception as e:
         services["database"] = ServiceStatus(status="unhealthy", message=f"Connection failed: {str(e)}")
-        overall_status = "degraded"
-
-    # Test Ollama service connectivity
-    try:
-        ollama_client = OllamaClient(settings)
-        ollama_health = await ollama_client.health_check()
-        services["ollama"] = ServiceStatus(status=ollama_health["status"], message=ollama_health["message"])
-        if ollama_health["status"] != "healthy":
-            overall_status = "degraded"
-    except Exception as e:
-        services["ollama"] = ServiceStatus(status="unhealthy", message=f"Ollama check failed: {str(e)}")
         overall_status = "degraded"
 
     return HealthResponse(

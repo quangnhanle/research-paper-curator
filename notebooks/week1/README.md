@@ -26,20 +26,17 @@ A comprehensive Jupyter notebook that guides students through:
 - **PostgreSQL 16** (Port 5432): Primary database for paper metadata and content storage
 - **OpenSearch 2.19** (Ports 9200, 5601): Hybrid search engine with management dashboards
 - **Apache Airflow 2.10** (Port 8080): Workflow orchestration with DAGs and PostgreSQL backend
-- **Ollama 0.11** (Port 11434): Local LLM server for future RAG implementation
 - **Docker Network**: All services communicate via `rag-network` with persistent volumes
 
 3. **Service-by-Service Setup**
    - PostgreSQL database for paper metadata storage
    - OpenSearch for full-text search capabilities
    - Apache Airflow for workflow automation
-   - Ollama for local LLM inference
    - FastAPI for REST API endpoints
 
 4. **Verification and Testing**
    - Automated health checks for all services
    - Step-by-step verification procedures
-   - Modular Ollama testing (4 focused test cells)
    - Common troubleshooting scenarios and solutions
 
 ## Learning Objectives
@@ -52,35 +49,6 @@ By completing this week's materials, students will:
 - Master troubleshooting techniques for multi-service applications
 - Learn direct HTTP API testing vs service abstraction layers
 - Build confidence working with professional development tools
-
-## Ollama Testing (Simplified for Week 1)
-
-The notebook includes modular Ollama testing broken into focused cells:
-
-- **Test 3A**: Check available models
-- **Test 3B**: Simple model testing (if models installed) 
-- **Test 3C**: Performance analysis
-- **Test 3D**: Learning notes and setup commands
-
-### Easy Model Installation (Optional for Week 1)
-
-```bash
-# Using Makefile (recommended)
-make ollama-pull MODEL=llama3.2:1b
-make ollama-test MODEL=llama3.2:1b
-
-# Direct HTTP calls for learning
-curl -X POST http://localhost:11434/api/pull -d '{"name":"llama3.2:1b"}'
-curl -X POST http://localhost:11434/api/generate -d '{"model":"llama3.2:1b","prompt":"Hello","stream":false}'
-```
-
-### Recommended Models for Course
-
-- **llama3.2:1b** (1.2GB) - Fast, good for testing
-- **llama3.2:3b** (2.0GB) - Balance of speed/quality
-- **llama3.1:8b** (4.7GB) - Better quality, slower
-
-**Note**: No models are required for Week 1 - service health check works without them.
 
 ## Target Audience
 

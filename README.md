@@ -83,7 +83,6 @@ uv run jupyter notebook notebooks/week1/week1_setup.ipynb
 - FastAPI development with automatic documentation and health checks
 - PostgreSQL database configuration and management
 - OpenSearch hybrid search engine setup
-- Ollama local LLM service configuration
 - Service orchestration and health monitoring
 - Professional development environment with code quality tools
 
@@ -98,7 +97,6 @@ uv run jupyter notebook notebooks/week1/week1_setup.ipynb
 - **PostgreSQL 16**: Paper metadata storage (Port 5432)
 - **OpenSearch 2.19**: Search engine with dashboards (Ports 9200, 5601)
 - **Apache Airflow 2.10**: Workflow orchestration (Port 8080)
-- **Ollama 0.11**: Local LLM server (Port 11434)
 
 ### **📖 Week 1 Blog Post**
 [The Infrastructure That Powers RAG Systems](https://jamwithai.substack.com/p/the-infrastructure-that-powers-rag) - Detailed walkthrough and production insights.
@@ -113,7 +111,6 @@ uv run jupyter notebook notebooks/week1/week1_setup.ipynb
 | **PostgreSQL 16** | Paper metadata and content storage | ✅ Ready |
 | **OpenSearch 2.19** | Hybrid search engine | ✅ Ready |
 | **Apache Airflow 2.10** | Workflow automation | ✅ Ready |
-| **Ollama 0.11** | Local LLM serving | ✅ Ready |
 
 **Development Tools:** UV, Ruff, MyPy, Pytest, Docker Compose
 

@@ -168,9 +168,6 @@ simple_auth_manager_passwords.json.generated
 # OpenSearch
 opensearch_data/
 
-# Ollama
-ollama_data/
-
 # Data directories
 data/
 

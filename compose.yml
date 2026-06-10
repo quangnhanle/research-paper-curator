@@ -21,7 +21,6 @@ services:
     environment:
       # Container-specific overrides (for inter-service communication)
       - OPENSEARCH_HOST=http://opensearch:9200
-      - OLLAMA_HOST=http://ollama:11434
       - POSTGRES_DATABASE_URL=postgresql+psycopg2://rag_user:rag_password@postgres:5432/rag_db
     networks:
       - rag-network
@@ -92,7 +91,6 @@ services:
       # Container hostnames for Airflow
       - POSTGRES_DATABASE_URL=postgresql+psycopg2://rag_user:rag_password@postgres:5432/rag_db
       - OPENSEARCH_HOST=http://opensearch:9200
-      - OLLAMA_HOST=http://ollama:11434
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - airflow_logs:/opt/airflow/logs
@@ -107,22 +105,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 120s
-    networks:
-      - rag-network
-
-  ollama:
-    image: ollama/ollama:0.11.2
-    container_name: rag-ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
     networks:
       - rag-network
 
@@ -153,7 +135,6 @@ services:
 volumes:
   postgres_data:
   opensearch_data:
-  ollama_data:
   airflow_logs:
 
 networks:
