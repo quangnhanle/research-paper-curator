@@ -126,7 +126,7 @@ uv run jupyter notebook notebooks/week1/week1_setup.ipynb
 - Professional development environment
 
 ### **Future Weeks: Complete RAG System** (6-Week Course)
-- **Week 2:** arXiv API integration, PDF parsing with Docling, automated data ingestion
+- **Week 2:** arXiv API integration, PDF parsing with PDF parser, automated data ingestion
 - **Week 3:** OpenSearch hybrid search implementation with BM25 + semantic vectors
 - **Week 4:** Context-aware chunking and retrieval evaluation with nDCG metrics
 - **Week 5:** Full RAG pipeline with LLM integration and prompt optimization

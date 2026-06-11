@@ -2,7 +2,7 @@ from fastapi import APIRouter
 from sqlalchemy import text
 
 from ..dependencies import DatabaseDep, SettingsDep
-from ..schemas.health import HealthResponse, ServiceStatus
+from ..schemas.api.health import HealthResponse, ServiceStatus
 
 router = APIRouter()
 
