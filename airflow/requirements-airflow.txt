@@ -10,3 +10,6 @@ py-pdf-parser>=0.13.0
 
 # Database drivers
 psycopg2-binary>=2.9.0
+
+# Search engine dependencies
+opensearch-py>=2.4.0
