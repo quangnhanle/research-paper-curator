@@ -103,77 +103,35 @@ class ArxivClient:
 
         try:
             logger.info(f"Fetching {max_results} {self.search_category} papers from arXiv")
-            xml_data = await self._request_xml(url)
+
+            # Add rate limiting delay between all requests (arXiv recommends 3 seconds)
+            if self._last_request_time is not None:
+                time_since_last = time.time() - self._last_request_time
+                if time_since_last < self.rate_limit_delay:
+                    sleep_time = self.rate_limit_delay - time_since_last
+                    await asyncio.sleep(sleep_time)
+
+            self._last_request_time = time.time()
+
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                xml_data = response.text
+
             papers = self._parse_response(xml_data)
             logger.info(f"Fetched {len(papers)} papers")
 
             return papers
 
-        except (ArxivAPITimeoutError, ArxivAPIException, ArxivParseError):
-            raise
+        except httpx.TimeoutException as e:
+            logger.error(f"arXiv API timeout: {e}")
+            raise ArxivAPITimeoutError(f"arXiv API request timed out: {e}")
+        except httpx.HTTPStatusError as e:
+            logger.error(f"arXiv API HTTP error: {e}")
+            raise ArxivAPIException(f"arXiv API returned error {e.response.status_code}: {e}")
         except Exception as e:
             logger.error(f"Failed to fetch papers from arXiv: {e}")
             raise ArxivAPIException(f"Unexpected error fetching papers from arXiv: {e}")
-
-    async def _request_xml(self, url: str, max_retries: int = 3) -> str:
-        """
-        GET a URL from arXiv with rate limiting and retry on transient failures.
-
-        arXiv's API intermittently times out or returns 5xx/429, especially for
-        submittedDate range queries. A single attempt is therefore unreliable, so
-        we retry with linear backoff before giving up.
-
-        Args:
-            url: Fully-built arXiv query URL
-            max_retries: Maximum number of attempts
-
-        Returns:
-            Raw XML response body
-
-        Raises:
-            ArxivAPITimeoutError: if all attempts time out
-            ArxivAPIException: on a non-retryable HTTP error or exhausted retries
-        """
-        transient_status = {429, 500, 502, 503, 504}
-
-        for attempt in range(max_retries):
-            # Rate limiting between all requests (arXiv recommends a delay)
-            if self._last_request_time is not None:
-                time_since_last = time.time() - self._last_request_time
-                if time_since_last < self.rate_limit_delay:
-                    await asyncio.sleep(self.rate_limit_delay - time_since_last)
-
-            self._last_request_time = time.time()
-
-            try:
-                async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-                    response = await client.get(url)
-                    response.raise_for_status()
-                    return response.text
-
-            except httpx.TimeoutException as e:
-                if attempt < max_retries - 1:
-                    wait_time = self.rate_limit_delay * (attempt + 1)
-                    logger.warning(f"arXiv API timeout (attempt {attempt + 1}/{max_retries}): {e}; retrying in {wait_time}s")
-                    await asyncio.sleep(wait_time)
-                    continue
-                logger.error(f"arXiv API timed out after {max_retries} attempts: {e}")
-                raise ArxivAPITimeoutError(f"arXiv API request timed out: {e}")
-
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code in transient_status and attempt < max_retries - 1:
-                    wait_time = self.rate_limit_delay * (attempt + 1)
-                    logger.warning(
-                        f"arXiv API returned {e.response.status_code} "
-                        f"(attempt {attempt + 1}/{max_retries}); retrying in {wait_time}s"
-                    )
-                    await asyncio.sleep(wait_time)
-                    continue
-                logger.error(f"arXiv API HTTP error: {e}")
-                raise ArxivAPIException(f"arXiv API returned error {e.response.status_code}: {e}")
-
-        # Unreachable: loop either returns or raises on the final attempt.
-        raise ArxivAPIException("arXiv API request failed after retries")
 
     async def fetch_papers_with_query(
         self,
@@ -221,14 +179,31 @@ class ArxivClient:
         url = f"{self.base_url}?{urlencode(params, quote_via=quote, safe=safe)}"
 
         try:
-            xml_data = await self._request_xml(url)
+            # Add rate limiting delay between all requests (arXiv recommends 3 seconds)
+            if self._last_request_time is not None:
+                time_since_last = time.time() - self._last_request_time
+                if time_since_last < self.rate_limit_delay:
+                    sleep_time = self.rate_limit_delay - time_since_last
+                    await asyncio.sleep(sleep_time)
+
+            self._last_request_time = time.time()
+
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                xml_data = response.text
+
             papers = self._parse_response(xml_data)
             logger.info(f"Query returned {len(papers)} papers")
 
             return papers
 
-        except (ArxivAPITimeoutError, ArxivAPIException, ArxivParseError):
-            raise
+        except httpx.TimeoutException as e:
+            logger.error(f"arXiv API timeout: {e}")
+            raise ArxivAPITimeoutError(f"arXiv API request timed out: {e}")
+        except httpx.HTTPStatusError as e:
+            logger.error(f"arXiv API HTTP error: {e}")
+            raise ArxivAPIException(f"arXiv API returned error {e.response.status_code}: {e}")
         except Exception as e:
             logger.error(f"Failed to fetch papers from arXiv: {e}")
             raise ArxivAPIException(f"Unexpected error fetching papers from arXiv: {e}")
@@ -469,17 +444,10 @@ class ArxivClient:
         return self.pdf_cache_dir / safe_filename
 
     async def _download_with_retry(self, url: str, path: Path, max_retries: int = 3) -> bool:
-        """
-        Download a file with retry logic.
+        """Download a file with retry logic."""
+        if max_retries is None:
+            max_retries = self._settings.download_max_retries
 
-        Args:
-            url: URL to download from
-            path: Path to save the file
-            max_retries: Maximum number of retry attempts
-
-        Returns:
-            True if successful, False otherwise
-        """
         logger.info(f"Downloading PDF from {url}")
 
         # Respect rate limits
