@@ -3,6 +3,7 @@ from typing import Annotated, Generator
 
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session
+from src.services.llm.client import ExternalLLMClient
 from src.config import Settings
 from src.db.interfaces.base import BaseDatabase
 from src.services.arxiv.client import ArxivClient
@@ -52,6 +53,10 @@ def get_embeddings_service(request: Request) -> JinaEmbeddingsClient:
     """Get embeddings service from the request state."""
     return request.app.state.embeddings_service
 
+def get_llm_client(request: Request) -> ExternalLLMClient:
+    """Get LLM client from the request state."""
+    return request.app.state.llm_client
+
 
 # Dependency annotations
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -61,3 +66,4 @@ OpenSearchDep = Annotated[OpenSearchClient, Depends(get_opensearch_client)]
 ArxivDep = Annotated[ArxivClient, Depends(get_arxiv_client)]
 PDFParserDep = Annotated[PDFParserService, Depends(get_pdf_parser)]
 EmbeddingsDep = Annotated[JinaEmbeddingsClient, Depends(get_embeddings_service)]
+LLMDep = Annotated[ExternalLLMClient, Depends(get_llm_client)]

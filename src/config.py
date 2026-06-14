@@ -116,6 +116,15 @@ class Settings(BaseConfigSettings):
     postgres_pool_size: int = 20
     postgres_max_overflow: int = 0
 
+    # External LLM provider (OpenAI-compatible Chat Completions API)
+    llm_provider: str = ""
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    llm_model: str = ""
+    llm_timeout: int = 300
+    llm_temperature: float = 0.7
+    llm_top_p: float = 0.9
+
     # Jina AI embeddings configuration
     jina_api_key: str = ""
 

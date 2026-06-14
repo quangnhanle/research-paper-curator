@@ -17,6 +17,7 @@ dependencies = [
     "python-dateutil>=2.9.0.post0",
     "py-pdf-parser>=0.13.0",
     "pypdfium2>=5.9.0",
+    "gradio>=4.0.0",
 ]
 readme = "README.md"
 

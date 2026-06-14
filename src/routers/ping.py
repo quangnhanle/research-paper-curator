@@ -1,6 +1,8 @@
 from fastapi import APIRouter
 from sqlalchemy import text
 
+from src.services.llm.client import ExternalLLMClient
+
 from ..dependencies import DatabaseDep, OpenSearchDep, SettingsDep
 from ..schemas.api.health import HealthResponse, ServiceStatus
 
@@ -57,6 +59,16 @@ async def health_check(settings: SettingsDep, database: DatabaseDep, opensearch_
     # Run synchronous checks
     _check_service("database", _check_database)
     _check_service("opensearch", _check_opensearch)
+
+    try:
+        llm_client = ExternalLLMClient(settings)
+        llm_health = await llm_client.health_check()
+        services["llm"] = ServiceStatus(status=llm_health["status"], message=llm_health["message"])
+        if llm_health["status"] != "healthy":
+            overall_status = "degraded"
+    except Exception as e:
+        services["llm"] = ServiceStatus(status="unhealthy", message=str(e))
+        overall_status = "degraded"
 
     return HealthResponse(
         status=overall_status,
