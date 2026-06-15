@@ -69,6 +69,25 @@ class PipelineException(MetadataFetchingException):
 class LLMException(Exception):
     """Base exception for LLM-related errors."""
 
+class LLMConnectionError(LLMException):
+    """Exception raised when cannot connect to the LLM provider."""
+
+
+class LLMTimeoutError(LLMException):
+    """Exception raised when the LLM provider times out."""
+
+
+class LLMAuthenticationError(LLMException):
+    """Exception raised when LLM provider authentication fails (401/403)."""
+
+
+class LLMRateLimitError(LLMException):
+    """Exception raised when the LLM provider rate limit is exceeded (429)."""
+
+
+class LLMProviderError(LLMException):
+    """Exception raised when the LLM provider returns a server error (5xx)."""
+
 # General application exceptions
 class ConfigurationError(Exception):
     """Exception raised when configuration is invalid."""
