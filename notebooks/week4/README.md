@@ -368,7 +368,6 @@ curl -X POST "http://localhost:8000/api/v1/hybrid-search/" \
 
 Week 4 provides the search foundation for Week 5's LLM integration:
 
-1. **LLM Integration**: Connect Ollama for answer generation
 2. **RAG Pipeline**: Query → Search → Context → Generate → Response  
 3. **Context Management**: Optimize retrieved chunks for LLM input
 4. **Answer Quality**: Implement citation and source attribution

@@ -1,10 +1,12 @@
 import json
 import logging
+from time import time
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from src.dependencies import EmbeddingsDep, LLMDep, OpenSearchDep
+from src.dependencies import CacheDep, EmbeddingsDep, LangfuseDep, LLMDep, OpenSearchDep
 from src.schemas.api.ask import AskRequest, AskResponse
+from src.services.langfuse.tracer import RAGTracer
 
 logger = logging.getLogger(__name__)
 
@@ -17,59 +19,67 @@ async def _prepare_chunks_and_sources(
     request: AskRequest,
     opensearch_client,
     embeddings_service,
+    rag_tracer: RAGTracer,
+    trace=None,
 ):
     """Shared function to prepare chunks and sources for RAG."""
     # Generate query embedding for hybrid search if enabled
     query_embedding = None
     search_mode = "bm25"
-
-    if request.use_hybrid:
-        try:
-            query_embedding = await embeddings_service.embed_query(request.query)
-            search_mode = "hybrid"
-            logger.info("Generated query embedding for hybrid search")
-        except Exception as e:
-            logger.warning(f"Failed to generate embeddings, falling back to BM25: {e}")
-            query_embedding = None
-            search_mode = "bm25"
+    
+    with rag_tracer.trace_embedding(trace, request.query) as embedding_span:
+        if request.use_hybrid:
+            try:
+                query_embedding = await embeddings_service.embed_query(request.query)
+                search_mode = "hybrid"
+                logger.info("Generated query embedding for hybrid search")
+            except Exception as e:
+                logger.warning(f"Failed to generate embeddings, falling back to BM25: {e}")
+                if embedding_span:
+                    rag_tracer.tracer.update_span(embedding_span, output={"success": False, "error": str(e)})
 
     # Retrieve top-k chunks
     logger.info(f"Retrieving top {request.top_k} chunks for query: '{request.query}'")
 
-    search_results = opensearch_client.search_unified(
-        query=request.query,
-        query_embedding=query_embedding,
-        size=request.top_k,
-        from_=0,
-        categories=request.categories,
-        use_hybrid=request.use_hybrid and query_embedding is not None,
-        min_score=0.0,
-    )
+    # Search with tracing
+    with rag_tracer.trace_search(trace, request.query, request.top_k) as search_span:
+        search_results = opensearch_client.search_unified(
+            query=request.query,
+            query_embedding=query_embedding,
+            size=request.top_k,
+            from_=0,
+            categories=request.categories,
+            use_hybrid=request.use_hybrid and query_embedding is not None,
+            min_score=0.0,
+        )
 
-    # Extract chunks with minimal data for LLM
-    chunks = []
-    sources_set = set()  # Use set to automatically handle duplicates
+        # Extract chunks with minimal data for LLM
+        chunks = []
+        arxiv_ids = []
+        sources_set = set()  # Use set to automatically handle duplicates
 
-    for hit in search_results.get("hits", []):
-        arxiv_id = hit.get("arxiv_id", "")
+        for hit in search_results.get("hits", []):
+            arxiv_id = hit.get("arxiv_id", "")
 
-        # Build minimal chunk for LLM (only content + arxiv_id)
-        chunk_data = {
-            "arxiv_id": arxiv_id,
-            "chunk_text": hit.get("chunk_text", hit.get("abstract", "")),
-        }
-        chunks.append(chunk_data)
+            # Build minimal chunk for LLM (only content + arxiv_id)
+            chunk_data = {
+                "arxiv_id": arxiv_id,
+                "chunk_text": hit.get("chunk_text", hit.get("abstract", "")),
+            }
+            chunks.append(chunk_data)
 
-        # Build PDF URL from arxiv_id for sources (automatically deduplicates)
-        if arxiv_id:
-            arxiv_id_clean = arxiv_id.split("v")[0] if "v" in arxiv_id else arxiv_id
-            pdf_url = f"https://arxiv.org/pdf/{arxiv_id_clean}.pdf"
-            sources_set.add(pdf_url)
+            # Build PDF URL from arxiv_id for sources (automatically deduplicates)
+            if arxiv_id:
+                arxiv_ids.append(arxiv_id)
+                arxiv_id_clean = arxiv_id.split("v")[0] if "v" in arxiv_id else arxiv_id
+                pdf_url = f"https://arxiv.org/pdf/{arxiv_id_clean}.pdf"
+                sources_set.add(pdf_url)
 
-    # Convert set back to list for consistent return type
-    sources = list(sources_set)
+        # End search span with essential metadata
+        rag_tracer.end_search(search_span, chunks, arxiv_ids, search_results.get("total", 0))
 
-    return chunks, sources, search_mode
+
+    return chunks, list(sources_set), search_mode
 
 
 @ask_router.post("/ask", response_model=AskResponse)
@@ -78,6 +88,8 @@ async def ask_question(
     opensearch_client: OpenSearchDep,
     embeddings_service: EmbeddingsDep,
     llm_client: LLMDep,
+    langfuse_tracer: LangfuseDep,
+    cache_client: CacheDep,
 ) -> AskResponse:
     """
     RAG endpoint for question answering.
@@ -86,56 +98,83 @@ async def ask_question(
     2. Passes chunks to LLM with prompt template
     3. Returns structured answer with sources
     """
-    try:
-        # Check service availability
-        if not opensearch_client.health_check():
-            raise HTTPException(status_code=503, detail="Search service is currently unavailable")
+    rag_tracer = RAGTracer(langfuse_tracer)
+    start_time = time()
 
-        # Check LLM provider availability
+    with rag_tracer.trace_request("api_user", request.query) as trace:
         try:
-            await llm_client.health_check()
-        except Exception as e:
-            logger.error(f"LLM provider unavailable: {e}")
-            raise HTTPException(status_code=503, detail="LLM service is currently unavailable")
+            # Check exact cache first
+            if cache_client:
+                try:
+                    cached_response = await cache_client.find_cached_response(request)
+                    if cached_response:
+                        logger.info("Returning cached response for exact query match")
+                        return cached_response
+                except Exception as e:
+                    logger.warning(f"Cache check failed, proceeding with normal flow: {e}")
 
-        # Prepare chunks and sources using shared function
-        chunks, sources, search_mode = await _prepare_chunks_and_sources(request, opensearch_client, embeddings_service)
+            # Check service availability
+            if not opensearch_client.health_check():
+                raise HTTPException(status_code=503, detail="Search service is currently unavailable")
 
-        if not chunks:
-            logger.warning(f"No chunks found for query: {request.query}")
-            return AskResponse(
+            # Check LLM provider availability
+            try:
+                await llm_client.health_check()
+            except Exception as e:
+                logger.error(f"LLM provider unavailable: {e}")
+                raise HTTPException(status_code=503, detail="LLM service is currently unavailable")
+
+            # Prepare chunks and sources using shared function
+            chunks, sources, search_mode = await _prepare_chunks_and_sources(
+                request, opensearch_client, embeddings_service, rag_tracer, trace
+            )
+
+            if not chunks:
+                logger.warning(f"No chunks found for query: {request.query}")
+                response = AskResponse(
+                    query=request.query,
+                    answer="I couldn't find any relevant information in the papers to answer your question.",
+                    sources=[],
+                    chunks_used=0,
+                    search_mode=search_mode,
+                )
+                rag_tracer.end_request(trace, response.answer, time() - start_time)
+                return response
+
+            model = request.model or llm_client.default_model
+            logger.info(f"Retrieved {len(chunks)} chunks, generating answer with {model}")
+
+            # Generate answer using LLM
+            rag_response = await llm_client.generate_rag_answer(query=request.query, chunks=chunks, model=model)
+
+            logger.debug(f"RAG response: {rag_response}")
+
+            # Prepare response using pre-built sources
+            response = AskResponse(
                 query=request.query,
-                answer="I couldn't find any relevant information in the papers to answer your question.",
-                sources=[],
-                chunks_used=0,
+                answer=rag_response.get("answer", "Unable to generate answer"),
+                sources=sources,
+                chunks_used=len(chunks),
                 search_mode=search_mode,
             )
 
-        model = request.model or llm_client.default_model
-        logger.info(f"Retrieved {len(chunks)} chunks, generating answer with {model}")
+            rag_tracer.end_request(trace, response.answer, time() - start_time)
 
-        # Generate answer using LLM
-        rag_response = await llm_client.generate_rag_answer(query=request.query, chunks=chunks, model=model)
+            # Store in cache for future requests
+            if cache_client:
+                try:
+                    await cache_client.store_response(request, response)
+                except Exception as e:
+                    logger.warning(f"Failed to store response in cache: {e}")
 
-        logger.debug(f"RAG response: {rag_response}")
+            logger.info(f"Successfully generated answer for query: '{request.query}'")
+            return response
 
-        # Prepare response using pre-built sources
-        response = AskResponse(
-            query=request.query,
-            answer=rag_response.get("answer", "Unable to generate answer"),
-            sources=sources,  # Use sources from search results
-            chunks_used=len(chunks),
-            search_mode=search_mode,
-        )
-
-        logger.info(f"Successfully generated answer for query: '{request.query}'")
-        return response
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in ask endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to process question: {str(e)}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error in ask endpoint: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to process question: {str(e)}")
 
 
 @stream_router.post("/stream")
@@ -144,8 +183,10 @@ async def ask_question_stream(
     opensearch_client: OpenSearchDep,
     embeddings_service: EmbeddingsDep,
     llm_client: LLMDep,
+    langfuse_tracer: LangfuseDep,
 ) -> StreamingResponse:
     """Streaming RAG endpoint - returns answer as it's generated."""
+    rag_tracer = RAGTracer(langfuse_tracer)
 
     async def generate_stream():
         try:
@@ -156,7 +197,10 @@ async def ask_question_stream(
             await llm_client.health_check()
 
             # Get chunks and sources using shared function
-            chunks, sources, search_mode = await _prepare_chunks_and_sources(request, opensearch_client, embeddings_service)
+            with rag_tracer.trace_request("stream_user", request.query) as trace:
+                chunks, sources, search_mode = await _prepare_chunks_and_sources(
+                    request, opensearch_client, embeddings_service, rag_tracer, trace
+                )
 
             if not chunks:
                 yield f"data: {json.dumps({'answer': 'No relevant information found.', 'sources': [], 'done': True})}\n\n"

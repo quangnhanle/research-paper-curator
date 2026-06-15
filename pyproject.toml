@@ -18,6 +18,8 @@ dependencies = [
     "py-pdf-parser>=0.13.0",
     "pypdfium2>=5.9.0",
     "gradio>=4.0.0",
+    "langfuse>=2.0.0,<3.0.0",
+    "redis>=6.4.0",
 ]
 readme = "README.md"
 
