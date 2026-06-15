@@ -20,6 +20,8 @@ dependencies = [
     "gradio>=4.0.0",
     "langfuse>=2.0.0,<3.0.0",
     "redis>=6.4.0",
+    "langgraph>=0.2.0",
+    "python-telegram-bot>=21.0",
 ]
 readme = "README.md"
 
