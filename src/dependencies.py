@@ -3,15 +3,16 @@ from typing import Annotated, Generator
 
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session
-from src.services.llm.client import ExternalLLMClient
 from src.config import Settings
 from src.db.interfaces.base import BaseDatabase
+from src.services.agents.service import AgenticRAGService
 from src.services.arxiv.client import ArxivClient
 from src.services.cache.client import CacheClient
 from src.services.embeddings.jina_client import JinaEmbeddingsClient
+from src.services.langfuse.client import LangfuseTracer
+from src.services.llm.client import ExternalLLMClient
 from src.services.opensearch.client import OpenSearchClient
 from src.services.pdf_parser.parser import PDFParserService
-from src.services.langfuse.client import LangfuseTracer
 
 
 @lru_cache
@@ -69,6 +70,11 @@ def get_cache_client(request: Request) -> CacheClient | None:
     return getattr(request.app.state, "cache_client", None)
 
 
+def get_agentic_rag_service(request: Request) -> AgenticRAGService:
+    """Get the agentic RAG service from the request state."""
+    return request.app.state.agentic_rag_service
+
+
 # Dependency annotations
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 DatabaseDep = Annotated[BaseDatabase, Depends(get_database)]
@@ -80,3 +86,4 @@ EmbeddingsDep = Annotated[JinaEmbeddingsClient, Depends(get_embeddings_service)]
 LLMDep = Annotated[ExternalLLMClient, Depends(get_llm_client)]
 LangfuseDep = Annotated[LangfuseTracer, Depends(get_langfuse_tracer)]
 CacheDep = Annotated[CacheClient | None, Depends(get_cache_client)]
+AgenticRAGDep = Annotated[AgenticRAGService, Depends(get_agentic_rag_service)]

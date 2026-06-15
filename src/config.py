@@ -146,6 +146,47 @@ class RedisSettings(BaseConfigSettings):
     ttl_hours: int = 6  # Cache TTL in hours
 
 
+class TelegramSettings(BaseConfigSettings):
+    model_config = SettingsConfigDict(
+        env_file=[".env", str(ENV_FILE_PATH)],
+        env_prefix="TELEGRAM__",
+        extra="ignore",
+        frozen=True,
+        case_sensitive=False,
+    )
+
+    enabled: bool = False
+    bot_token: str = ""
+
+    # Access control: comma-separated Telegram user IDs. Empty = allow everyone.
+    allowed_user_ids: str = ""
+
+    # Deployment mode (polling is fine for dev; webhook needs public HTTPS).
+    use_webhook: bool = False
+    webhook_url: str = ""
+    webhook_path: str = "/telegram/webhook"
+
+    # Behaviour
+    max_message_length: int = 4000  # Telegram hard limit is 4096
+    session_timeout_minutes: int = 30
+
+    # Default per-query preferences
+    default_top_k: int = 3
+    default_use_hybrid: bool = True
+    # Use the agentic workflow (guardrail + grading) for free-text questions.
+    use_agentic: bool = True
+
+    @property
+    def allowed_ids(self) -> set[int]:
+        """Parse ``allowed_user_ids`` into a set of ints (empty = allow all)."""
+        ids: set[int] = set()
+        for part in self.allowed_user_ids.split(","):
+            part = part.strip()
+            if part.isdigit():
+                ids.add(int(part))
+        return ids
+
+
 class Settings(BaseConfigSettings):
     app_version: str = "0.1.0"
     debug: bool = True
@@ -175,6 +216,7 @@ class Settings(BaseConfigSettings):
     opensearch: OpenSearchSettings = Field(default_factory=OpenSearchSettings)
     langfuse: LangfuseSettings = Field(default_factory=LangfuseSettings)
     redis: RedisSettings = Field(default_factory=RedisSettings)
+    telegram: TelegramSettings = Field(default_factory=TelegramSettings)
 
     @field_validator("postgres_database_url")
     @classmethod
