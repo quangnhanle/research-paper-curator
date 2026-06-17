@@ -1,0 +1,35 @@
+# Production overrides — merge on top of compose.yml
+# Usage: docker compose -f compose.yml -f compose.prod.yml up --build -d
+
+services:
+  api:
+    restart: always
+
+  redis:
+    restart: always
+
+  opensearch:
+    restart: always
+
+  opensearch-dashboards:
+    restart: always
+
+  airflow:
+    restart: always
+
+  postgres:
+    restart: always
+
+  clickhouse:
+    restart: always
+
+  langfuse:
+    restart: always
+    environment:
+      # Override hardcoded values with env vars from .env
+      - NEXTAUTH_URL=${NEXTAUTH_URL}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - SALT=${LANGFUSE_SALT}
+
+  langfuse-postgres:
+    restart: always

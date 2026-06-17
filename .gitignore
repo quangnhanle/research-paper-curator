@@ -98,8 +98,11 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
-# Environments
+# Environments — keep only *.example files, never commit real secrets
 .env
+.env.local
+.env.production
+.env.staging
 .venv
 env/
 venv/

@@ -1,0 +1,37 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [production]
+
+jobs:
+  deploy:
+    name: Deploy to Production Server
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          port: ${{ secrets.PROD_SSH_PORT }}
+          script: |
+            set -e
+
+            cd ${{ secrets.PROD_APP_DIR }}
+
+            echo ">>> Pulling latest code from production branch..."
+            git fetch origin production
+            git reset --hard origin/production
+
+            echo ">>> Starting containers..."
+            docker compose -f compose.yml -f compose.prod.yml up --build -d
+
+            echo ">>> Removing dangling images..."
+            docker image prune -f
+
+            echo ">>> Container status:"
+            docker compose -f compose.yml -f compose.prod.yml ps

@@ -1,7 +1,9 @@
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
 
+import redis
 import uvicorn
 from fastapi import FastAPI
 from src.config import get_settings
@@ -18,6 +20,23 @@ from src.services.llm.factory import make_llm_client
 from src.services.opensearch.factory import make_opensearch_client
 from src.services.pdf_parser.factory import make_pdf_parser_service
 from src.services.telegram.factory import make_telegram_service
+
+_TELEGRAM_LOCK_KEY = "telegram:bot:leader"
+_TELEGRAM_LOCK_TTL = 30  # seconds; heartbeat renews every TTL/3
+
+
+async def _run_leader_heartbeat(r: redis.Redis, stop: asyncio.Event) -> None:
+    """Renew the Telegram leader lock so it doesn't expire while the bot runs."""
+    interval = _TELEGRAM_LOCK_TTL // 3
+    while not stop.is_set():
+        try:
+            r.expire(_TELEGRAM_LOCK_KEY, _TELEGRAM_LOCK_TTL)
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(asyncio.shield(stop.wait()), timeout=interval)
+        except asyncio.TimeoutError:
+            pass
 
 # Setup logging
 logging.basicConfig(
@@ -82,18 +101,41 @@ async def lifespan(app: FastAPI):
     logger.info("Services initialized: arXiv API client, PDF parser, OpenSearch, Embeddings, LLM, Agentic RAG")
 
     # Telegram bot (optional - only if TELEGRAM__ENABLED=true)
+    # Use a Redis leader lock so exactly one of the N uvicorn workers runs the bot.
     app.state.telegram_bot = None
+    app.state.telegram_leader_redis = None
+    app.state.telegram_leader_stop = None
+    app.state.telegram_leader_task = None
     try:
-        telegram_bot = make_telegram_service(
-            opensearch_client=opensearch_client,
-            embeddings_client=app.state.embeddings_service,
-            llm_client=app.state.llm_client,
-            agentic_service=app.state.agentic_rag_service,
-            cache_client=app.state.cache_client,
+        lock_redis = redis.Redis(
+            host=settings.redis.host,
+            port=settings.redis.port,
+            password=settings.redis.password if settings.redis.password else None,
+            db=settings.redis.db,
+            decode_responses=True,
+            socket_connect_timeout=5,
         )
-        if telegram_bot:
-            await telegram_bot.start()
-            app.state.telegram_bot = telegram_bot
+        acquired = lock_redis.set(_TELEGRAM_LOCK_KEY, os.getpid(), nx=True, ex=_TELEGRAM_LOCK_TTL)
+        if acquired:
+            telegram_bot = make_telegram_service(
+                opensearch_client=opensearch_client,
+                embeddings_client=app.state.embeddings_service,
+                llm_client=app.state.llm_client,
+                agentic_service=app.state.agentic_rag_service,
+                cache_client=app.state.cache_client,
+            )
+            if telegram_bot:
+                await telegram_bot.start()
+                app.state.telegram_bot = telegram_bot
+                stop_event = asyncio.Event()
+                app.state.telegram_leader_redis = lock_redis
+                app.state.telegram_leader_stop = stop_event
+                app.state.telegram_leader_task = asyncio.create_task(
+                    _run_leader_heartbeat(lock_redis, stop_event)
+                )
+        else:
+            logger.info("Telegram bot already running in another worker (skipping)")
+            lock_redis.close()
     except Exception as e:
         logger.error(f"Failed to start Telegram bot: {e}", exc_info=True)
 
@@ -102,6 +144,15 @@ async def lifespan(app: FastAPI):
 
     # Cleanup
     if getattr(app.state, "telegram_bot", None):
+        if getattr(app.state, "telegram_leader_stop", None):
+            app.state.telegram_leader_stop.set()
+        if getattr(app.state, "telegram_leader_task", None):
+            app.state.telegram_leader_task.cancel()
+        if getattr(app.state, "telegram_leader_redis", None):
+            try:
+                app.state.telegram_leader_redis.delete(_TELEGRAM_LOCK_KEY)
+            except Exception:
+                pass
         try:
             await app.state.telegram_bot.stop()
         except Exception as e:

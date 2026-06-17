@@ -186,7 +186,7 @@ services:
     environment:
       - NODE_ENV=production
       - DATABASE_URL=postgresql://langfuse:langfuse@langfuse-postgres:5432/langfuse
-      - NEXTAUTH_URL=http://localhost:3000
+      - NEXTAUTH_URL=http://47.237.203.158:3000
       - NEXTAUTH_SECRET=changeThisToASecureRandomString32CharsMin  
       - SALT=changeThisToAnotherSecureRandomString 
       - TELEMETRY_ENABLED=false  
