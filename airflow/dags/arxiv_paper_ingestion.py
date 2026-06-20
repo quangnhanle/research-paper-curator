@@ -5,6 +5,7 @@ from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 from arxiv_ingestion.fetching import fetch_daily_papers
 from arxiv_ingestion.indexing import index_papers_hybrid, verify_hybrid_index
+from arxiv_ingestion.notify import notify_telegram
 from arxiv_ingestion.reporting import generate_daily_report
 
 # Import task functions from modular structure
@@ -59,6 +60,15 @@ report_task = PythonOperator(
     dag=dag,
 )
 
+# Push a digest of newly crawled papers to Telegram (no-op if disabled).
+# all_done: still notify even if an upstream task failed (reports partial status).
+notify_task = PythonOperator(
+    task_id="notify_telegram",
+    python_callable=notify_telegram,
+    trigger_rule="all_done",
+    dag=dag,
+)
+
 cleanup_task = BashOperator(
     task_id="cleanup_temp_files",
     bash_command="""
@@ -71,5 +81,5 @@ cleanup_task = BashOperator(
 )
 
 # Task dependencies
-# Simplified pipeline: setup -> fetch -> hybrid index -> report -> cleanup
-setup_task >> fetch_task >> index_hybrid_task >> report_task >> cleanup_task
+# Pipeline: setup -> fetch -> hybrid index -> report -> notify (Telegram) -> cleanup
+setup_task >> fetch_task >> index_hybrid_task >> report_task >> notify_task >> cleanup_task
