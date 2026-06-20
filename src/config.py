@@ -176,6 +176,14 @@ class TelegramSettings(BaseConfigSettings):
     # Use the agentic workflow (guardrail + grading) for free-text questions.
     use_agentic: bool = True
 
+    # Ingestion push notifications (separate from the conversational bot above).
+    # Sends a digest of newly crawled papers to a fixed chat after the Airflow
+    # ingestion pipeline completes. Independent of ``enabled``.
+    notify_on_ingestion: bool = False
+    notify_chat_id: str = ""  # Target chat/user id for the digest push.
+    notify_max_papers: int = 10  # Max papers listed in a single digest.
+    notify_abstract_chars: int = 200  # Abstract chars per paper (0 = omit abstract).
+
     @property
     def allowed_ids(self) -> set[int]:
         """Parse ``allowed_user_ids`` into a set of ints (empty = allow all)."""

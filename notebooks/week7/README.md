@@ -797,6 +797,89 @@ Week 7 is complete when:
 
 ---
 
+## 📣 Part 3: Ingestion Push Notifications (Crawl → Telegram digest)
+
+Beyond the conversational (pull) bot, the pipeline can **push** a digest to Telegram
+automatically **after each crawl finishes**. This runs inside the Airflow ingestion
+DAG and is fully decoupled from the polling bot in the API process.
+
+### How it works
+
+```
+Airflow DAG: setup → fetch → hybrid index → report → notify_telegram → cleanup
+                                                          │
+                                                          ├─ reads run stats (XCom: daily_report)
+                                                          ├─ loads the most recently stored papers (PostgreSQL)
+                                                          ├─ builds a Markdown digest (counts + titles + links + short abstracts)
+                                                          └─ sends via a stateless telegram.Bot (no polling, no leader lock)
+```
+
+The `notify_telegram` task uses `trigger_rule="all_done"`, so you still get a digest
+(reporting partial/failed status) even when an upstream task fails.
+
+### Components
+
+```
+airflow/dags/arxiv_ingestion/notify.py   # notify_telegram task + build_digest()
+src/services/telegram/notifier.py        # send_telegram_message() — one-off sender + split
+src/repositories/paper.py                # get_recent_papers() — newest-first by created_at
+```
+
+### Configuration
+
+Push notifications are controlled independently of the conversational bot — you can
+enable the digest without enabling `/ask` & friends. You only need a valid bot token
+and a target chat id.
+
+```bash
+# Enable the after-crawl digest
+TELEGRAM__NOTIFY_ON_INGESTION=true
+# Bot token from @BotFather (shared with the conversational bot)
+TELEGRAM__BOT_TOKEN=your_token_from_botfather_here
+# Where to send the digest (personal chat = your numeric user id)
+TELEGRAM__NOTIFY_CHAT_ID=123456789
+# Number of papers listed in the digest
+TELEGRAM__NOTIFY_MAX_PAPERS=10
+# Abstract characters shown per paper (0 = omit abstracts)
+TELEGRAM__NOTIFY_ABSTRACT_CHARS=200
+```
+
+### Getting your `NOTIFY_CHAT_ID` (personal chat)
+
+1. Open Telegram and send any message (e.g. `/start`) to your bot.
+2. Visit `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` in a browser.
+3. Find `"chat":{"id":123456789,...}` — that number is your chat id.
+   (Alternatively, message `@userinfobot` to get your user id.)
+
+> The bot can only message a user who has started a conversation with it first.
+
+### Example digest
+
+```
+✅ arXiv ingestion — 20260618
+
+📥 Fetched: 5  •  💾 Stored: 4  •  🔎 Indexed: 4
+
+Latest 4 papers:
+
+1. Attention Is All You Need
+https://arxiv.org/abs/1706.03762
+We propose the Transformer, a model architecture relying entirely on attention…
+```
+
+### Testing
+
+```bash
+# Unit tests (formatter + sender, no live Telegram needed)
+uv run pytest tests/unit/services/test_telegram_notifier.py tests/unit/test_ingestion_digest.py -q
+
+# Trigger the whole DAG once from the Airflow UI (http://localhost:8080),
+# or just the notify task after a run:
+docker compose exec airflow airflow tasks test arxiv_paper_ingestion notify_telegram 2026-06-18
+```
+
+---
+
 ## FAQ
 
 **Q: Do I need a public IP for the Telegram bot?**

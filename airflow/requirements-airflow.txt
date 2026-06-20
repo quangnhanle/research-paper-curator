@@ -13,3 +13,6 @@ psycopg2-binary>=2.9.0
 
 # Search engine dependencies
 opensearch-py>=2.4.0
+
+# Telegram notifications (notify_telegram task)
+python-telegram-bot>=21.0

@@ -35,6 +35,15 @@ class PaperRepository:
         stmt = select(func.count(Paper.id))
         return self.session.scalar(stmt) or 0
 
+    def get_recent_papers(self, limit: int = 10) -> List[Paper]:
+        """Get the most recently ingested papers, newest first.
+
+        Ordered by ``created_at`` so the result reflects what the latest
+        ingestion run actually stored (used for the Telegram digest).
+        """
+        stmt = select(Paper).order_by(Paper.created_at.desc()).limit(limit)
+        return list(self.session.scalars(stmt))
+
     def get_processed_papers(self, limit: int = 100, offset: int = 0) -> List[Paper]:
         """Get papers that have been successfully processed with PDF content."""
         stmt = (
