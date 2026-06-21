@@ -445,8 +445,11 @@ class MetadataFetcher:
                 if parsed_paper and parsed_paper.pdf_content:
                     max_text_size = self.settings.opensearch.max_text_size
                     opensearch_data["raw_text"] = parsed_paper.pdf_content.raw_text[:max_text_size]
+                    # Flag whether the stored full text is complete or page-truncated.
+                    opensearch_data["content_truncated"] = parsed_paper.pdf_content.truncated
                 else:
                     opensearch_data["raw_text"] = ""
+                    opensearch_data["content_truncated"] = False
 
                 # Index to OpenSearch
                 if self.opensearch_client.index_paper(opensearch_data):
