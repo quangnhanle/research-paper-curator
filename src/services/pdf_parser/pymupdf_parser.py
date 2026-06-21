@@ -1,113 +1,148 @@
 import asyncio
 import logging
 import re
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
 from src.exceptions import PDFParsingException, PDFValidationError
-from src.schemas.pdf_parser.models import PaperFigure, PaperSection, PaperTable, ParserType, PdfContent
+from src.schemas.pdf_parser.models import PaperSection, ParserType, PdfContent
 
 logger = logging.getLogger(__name__)
 
+# PyMuPDF span flag bit for bold text (see fitz TEXT_FONT_* constants).
+_FITZ_BOLD_FLAG = 1 << 4
 
-class DoclingParser:
-    """PDF parser backed by py-pdf-parser for fallback when GROBID fails."""
 
-    def __init__(self, max_pages: int = 20, max_file_size_mb: int = 20, do_ocr: bool = False, do_table_structure: bool = True):
+@dataclass
+class _TextLine:
+    """A single extracted line of text plus the typographic signals we use to
+    tell headings apart from body text (font size and weight)."""
+
+    text: str
+    size: float
+    bold: bool
+
+
+class PyMuPDFParser:
+    """PDF parser backed by PyMuPDF (fitz).
+
+    Chosen for being fast (C-based), lightweight, and for exposing reliable
+    per-span font metrics that let us detect section headings far more
+    accurately than font-name heuristics.
+    """
+
+    def __init__(self, max_pages: int = 20, max_file_size_mb: int = 20):
         """
-        Initialize the parser with limits kept for compatibility with the old Docling interface.
+        Initialize the parser with size/page limits.
 
         Args:
             max_pages: Maximum number of pages to process (default: 20)
             max_file_size_mb: Maximum file size in MB (default: 20MB)
-            do_ocr: Kept for interface compatibility; unused by py-pdf-parser.
-            do_table_structure: Kept for interface compatibility; unused by py-pdf-parser.
         """
-        self._warmed_up = False
         self.max_pages = max_pages
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024
-        self.do_ocr = do_ocr
-        self.do_table_structure = do_table_structure
-        self._warned_missing_pdfium = False
 
-    def _warm_up_models(self):
-        """Pre-warm the models with a small dummy document to avoid cold start."""
-        if not self._warmed_up:
-            # This happens only once per parser instance.
-            self._warmed_up = True
+    @staticmethod
+    def _open_document(pdf_path: Path):
+        """Open a PDF with PyMuPDF, raising a clear error if the backend is missing."""
+        try:
+            import fitz  # PyMuPDF
+        except ImportError as exc:
+            raise PDFParsingException(
+                "PyMuPDF (pymupdf) is not installed. Install project dependencies to enable PDF parsing."
+            ) from exc
 
-    def _load_document(self, pdf_path: Path, max_pages: Optional[int] = None) -> tuple[object, int]:
-        """Load a PDF, reading at most ``max_pages`` pages.
+        return fitz.open(str(pdf_path))
 
-        ``py_pdf_parser.load_file`` reads the entire document into memory before
-        returning, which is the root cause of the old size/page limits. We
-        replicate its lightweight loader here so we can pass ``maxpages`` down to
-        pdfminer and bound both memory use and processing time regardless of how
-        long the paper is. Pages beyond ``max_pages`` are simply not read.
+    def _load_document(self, pdf_path: Path, max_pages: Optional[int] = None) -> tuple[list[_TextLine], int]:
+        """Load a PDF with PyMuPDF, reading at most ``max_pages`` pages.
+
+        PyMuPDF reads pages lazily, so we only ever touch the first ``max_pages``
+        pages; the rest of a long paper is never decoded. Text is pulled per line
+        (``get_text("dict")``) in the document's content-stream order, which is the
+        natural reading order for well-formed arXiv PDFs.
 
         Args:
             pdf_path: Path to the PDF file.
             max_pages: Maximum number of pages to read (``None``/0 means no limit).
 
         Returns:
-            Tuple of (PDFDocument, number of pages actually read).
+            Tuple of (list of text lines, number of pages actually read).
         """
+        document = self._open_document(pdf_path)
         try:
-            from pdfminer.high_level import extract_pages
-            from pdfminer.layout import LAParams, LTFigure, LTTextBox
-            from py_pdf_parser.components import PDFDocument
-            from py_pdf_parser.loaders import DEFAULT_LA_PARAMS, Page
-        except ImportError as exc:
-            raise PDFParsingException(
-                "py-pdf-parser is not installed. Install project dependencies to enable PDF parsing."
-            ) from exc
+            pages_total = document.page_count
+            limit = min(pages_total, max_pages) if max_pages else pages_total
 
-        la_params = {**DEFAULT_LA_PARAMS, "all_texts": True}
-        maxpages = max_pages or 0  # pdfminer treats 0 as "no limit"
+            lines: list[_TextLine] = []
+            for page_index in range(limit):
+                page = document.load_page(page_index)
+                page_dict = page.get_text("dict")
+                for block in page_dict.get("blocks", []):
+                    # Image/drawing blocks have no "lines" key; skip them.
+                    for line in block.get("lines", []):
+                        spans = line.get("spans", [])
+                        text = self._normalize_text("".join(span.get("text", "") for span in spans))
+                        if not text:
+                            continue
+                        size = max((span.get("size", 0.0) for span in spans), default=0.0)
+                        bold = any(self._span_is_bold(span) for span in spans)
+                        lines.append(_TextLine(text=text, size=round(size, 1), bold=bold))
 
-        pages: dict = {}
-        pages_read = 0
-        with open(pdf_path, "rb") as in_file:
-            for page in extract_pages(in_file, laparams=LAParams(**la_params), maxpages=maxpages):
-                pages_read += 1
-                elements = [element for element in page if isinstance(element, LTTextBox)]
-                # With all_texts=True we also pull text nested inside figures.
-                for figure in (element for element in page if isinstance(element, LTFigure)):
-                    elements += [element for element in figure if isinstance(element, LTTextBox)]
-                if not elements:
-                    continue
-                pages[page.pageid] = Page(width=page.width, height=page.height, elements=elements)
+            return lines, limit
+        finally:
+            document.close()
 
-        return PDFDocument(pages=pages, pdf_file_path=str(pdf_path)), pages_read
+    @staticmethod
+    def _span_is_bold(span: dict) -> bool:
+        """Detect bold text from PyMuPDF span flags, with a font-name fallback."""
+        if span.get("flags", 0) & _FITZ_BOLD_FLAG:
+            return True
+        font_name = str(span.get("font", "")).lower()
+        return any(token in font_name for token in ("bold", "black", "semibold"))
 
     def _extract_content(self, pdf_path: Path) -> tuple[str, list[PaperSection], int]:
         """Synchronous, CPU-bound text extraction.
 
-        pdfminer parsing and section building are blocking and CPU-heavy, so this
-        runs in a worker thread (see :meth:`parse_pdf`) to keep the event loop free
-        for concurrent downloads.
+        PDF parsing and section building are blocking and CPU-heavy, so this runs
+        in a worker thread (see :meth:`parse_pdf`) to keep the event loop free for
+        concurrent downloads.
 
         Returns:
             Tuple of (raw_text, sections, number of pages actually read).
         """
-        document, pages_processed = self._load_document(pdf_path, max_pages=self.max_pages)
-        elements = [element for element in document.elements if self._normalize_text(element.text())]
-        raw_text = "\n".join(self._normalize_text(element.text()) for element in elements)
-        sections = self._build_sections(elements)
+        lines, pages_processed = self._load_document(pdf_path, max_pages=self.max_pages)
+        raw_text = "\n".join(line.text for line in lines)
+        sections = self._build_sections(lines)
         return raw_text, sections, pages_processed
 
     @staticmethod
     def _normalize_text(text: str) -> str:
         """Collapse repeated whitespace, strip NUL bytes, and trim the text.
 
-        PDF extractors (pdfminer) can emit NUL (0x00) characters that PostgreSQL
-        rejects in text columns, so they are removed here before any storage.
+        PDF extractors can emit NUL (0x00) characters that PostgreSQL rejects in
+        text columns, so they are removed here before any storage.
         """
         text = text.replace("\x00", "")
         return re.sub(r"\s+", " ", text).strip()
 
-    def _looks_like_heading(self, text: str, element: object, is_first_element: bool = False) -> bool:
-        """Heuristic heading detector used to build sections without Docling structure."""
-        normalized = self._normalize_text(text)
+    @staticmethod
+    def _estimate_body_size(lines: list[_TextLine]) -> float:
+        """Estimate the body-text font size as the most common line size.
+
+        Headings are then anything meaningfully larger than this baseline, which
+        is far more robust than matching hard-coded font names.
+        """
+        counts = Counter(round(line.size) for line in lines if line.size)
+        if not counts:
+            return 0.0
+        return float(counts.most_common(1)[0][0])
+
+    def _looks_like_heading(self, line: _TextLine, body_size: float, is_first_line: bool = False) -> bool:
+        """Heuristic heading detector combining known titles, numbering, and font size."""
+        normalized = line.text
         if not normalized:
             return False
 
@@ -130,44 +165,51 @@ class DoclingParser:
         }:
             return True
 
+        # Numbered sections: "1 Introduction", "1.2 Background", etc.
         if re.match(r"^\d+(?:\.\d+)*\s+\S+", normalized):
             return True
 
         if normalized.endswith(":") and len(normalized) <= 80:
             return True
 
-        if len(normalized.split()) <= 12 and len(normalized) <= 120:
-            font_name = getattr(element, "font", "") or ""
-            font_name = str(font_name).lower()
-            if any(token in font_name for token in ("bold", "black", "semibold", "medium")):
+        word_count = len(normalized.split())
+
+        # A line set in a noticeably larger font than the body text, and short
+        # enough to be a title rather than a sentence, is treated as a heading.
+        if body_size and line.size >= body_size * 1.10 and word_count <= 16 and len(normalized) <= 140:
+            return True
+
+        if word_count <= 12 and len(normalized) <= 120:
+            if line.bold:
                 return True
-            if is_first_element and len(normalized) <= 90:
+            if is_first_line and len(normalized) <= 90:
                 return True
 
         return False
 
-    def _build_sections(self, elements: list[object]) -> list[PaperSection]:
-        """Convert a flat element stream into paper sections."""
+    def _build_sections(self, lines: list[_TextLine]) -> list[PaperSection]:
+        """Convert a flat line stream into paper sections."""
         sections: list[PaperSection] = []
         current_title = "Content"
         current_lines: list[str] = []
+        body_size = self._estimate_body_size(lines)
 
         def flush_section() -> None:
             if current_lines:
                 sections.append(PaperSection(title=current_title, content="\n".join(current_lines).strip()))
 
-        for index, element in enumerate(elements):
-            element_text = self._normalize_text(element.text())
-            if not element_text:
+        for index, line in enumerate(lines):
+            if not line.text:
                 continue
 
-            if self._looks_like_heading(element_text, element, is_first_element=index == 0 and not sections and not current_lines):
+            is_first = index == 0 and not sections and not current_lines
+            if self._looks_like_heading(line, body_size, is_first_line=is_first):
                 flush_section()
-                current_title = element_text.rstrip(":")
+                current_title = line.text.rstrip(":")
                 current_lines = []
                 continue
 
-            current_lines.append(element_text)
+            current_lines.append(line.text)
 
         flush_section()
 
@@ -177,25 +219,12 @@ class DoclingParser:
         return sections
 
     def _get_page_count(self, pdf_path: Path) -> Optional[int]:
-        """
-        Return the number of pages when an optional PDF backend is available.
-
-        Page-count validation is treated as best-effort so PDF parsing still
-        works in environments that only install `py-pdf-parser`.
-        """
+        """Return the number of pages using PyMuPDF."""
+        document = self._open_document(pdf_path)
         try:
-            import pypdfium2 as pdfium
-        except ImportError:
-            if not self._warned_missing_pdfium:
-                logger.warning("pypdfium2 is not installed; skipping PDF page-count validation")
-                self._warned_missing_pdfium = True
-            return None
-
-        pdf_doc = pdfium.PdfDocument(str(pdf_path))
-        try:
-            return len(pdf_doc)
+            return document.page_count
         finally:
-            pdf_doc.close()
+            document.close()
 
     def _validate_pdf(self, pdf_path: Path) -> Optional[int]:
         """
@@ -247,7 +276,7 @@ class DoclingParser:
 
     async def parse_pdf(self, pdf_path: Path) -> Optional[PdfContent]:
         """
-        Parse PDF using py-pdf-parser.
+        Parse PDF using PyMuPDF.
 
         Papers longer than ``max_pages`` are not skipped: the first ``max_pages``
         pages are parsed and the result is flagged as ``truncated`` (both as a
@@ -263,9 +292,6 @@ class DoclingParser:
         try:
             # Validate PDF and learn its page count (does not enforce the page limit).
             pages_total = self._validate_pdf(pdf_path)
-
-            # Warm up models on first use
-            self._warm_up_models()
 
             # Offload the blocking, CPU-bound extraction to a worker thread so the
             # event loop stays free and concurrent PDF downloads keep progressing.
@@ -286,12 +312,12 @@ class DoclingParser:
                 tables=[],
                 raw_text=raw_text,
                 references=[],
-                parser_used=ParserType.PY_PDF_PARSER,
+                parser_used=ParserType.PYMUPDF,
                 truncated=truncated,
                 pages_total=pages_total,
                 pages_processed=pages_processed,
                 metadata={
-                    "source": "py-pdf-parser",
+                    "source": "pymupdf",
                     "note": "Content extracted from PDF, metadata comes from arXiv API",
                     "complete": not truncated,
                     "truncated": truncated,
@@ -312,7 +338,7 @@ class DoclingParser:
                 # Re-raise other validation errors (corrupted files, etc.)
                 raise
         except Exception as e:
-            logger.error(f"Failed to parse PDF with py-pdf-parser: {e}")
+            logger.error(f"Failed to parse PDF with PyMuPDF: {e}")
             logger.error(f"PDF path: {pdf_path}")
             logger.error(f"PDF size: {pdf_path.stat().st_size} bytes")
             logger.error(f"Error type: {type(e).__name__}")
@@ -320,7 +346,7 @@ class DoclingParser:
             # Add specific handling for common issues
             error_msg = str(e).lower()
 
-            if "not valid" in error_msg:
+            if "not valid" in error_msg or "cannot open" in error_msg or "no objects found" in error_msg:
                 logger.error("PDF appears to be corrupted or not a valid PDF file")
                 raise PDFParsingException(f"PDF appears to be corrupted or invalid: {pdf_path}")
             elif "timeout" in error_msg:
@@ -330,4 +356,4 @@ class DoclingParser:
                 logger.error("Out of memory - PDF may be too large or complex")
                 raise PDFParsingException(f"Out of memory processing PDF: {pdf_path}")
             else:
-                raise PDFParsingException(f"Failed to parse PDF with py-pdf-parser: {e}")
+                raise PDFParsingException(f"Failed to parse PDF with PyMuPDF: {e}")

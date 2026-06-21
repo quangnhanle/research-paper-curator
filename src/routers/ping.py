@@ -1,6 +1,5 @@
 from fastapi import APIRouter
 from sqlalchemy import text
-
 from src.services.llm.client import ExternalLLMClient
 
 from ..dependencies import DatabaseDep, OpenSearchDep, SettingsDep
