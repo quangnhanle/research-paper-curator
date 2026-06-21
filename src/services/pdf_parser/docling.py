@@ -34,16 +34,49 @@ class DoclingParser:
             # This happens only once per parser instance.
             self._warmed_up = True
 
-    def _load_document(self, pdf_path: Path):
-        """Load a PDF document through py-pdf-parser."""
+    def _load_document(self, pdf_path: Path, max_pages: Optional[int] = None) -> tuple[object, int]:
+        """Load a PDF, reading at most ``max_pages`` pages.
+
+        ``py_pdf_parser.load_file`` reads the entire document into memory before
+        returning, which is the root cause of the old size/page limits. We
+        replicate its lightweight loader here so we can pass ``maxpages`` down to
+        pdfminer and bound both memory use and processing time regardless of how
+        long the paper is. Pages beyond ``max_pages`` are simply not read.
+
+        Args:
+            pdf_path: Path to the PDF file.
+            max_pages: Maximum number of pages to read (``None``/0 means no limit).
+
+        Returns:
+            Tuple of (PDFDocument, number of pages actually read).
+        """
         try:
-            from py_pdf_parser.loaders import load_file
+            from pdfminer.high_level import extract_pages
+            from pdfminer.layout import LAParams, LTFigure, LTTextBox
+            from py_pdf_parser.components import PDFDocument
+            from py_pdf_parser.loaders import DEFAULT_LA_PARAMS, Page
         except ImportError as exc:
             raise PDFParsingException(
                 "py-pdf-parser is not installed. Install project dependencies to enable PDF parsing."
             ) from exc
 
-        return load_file(str(pdf_path), la_params={"all_texts": True})
+        la_params = {**DEFAULT_LA_PARAMS, "all_texts": True}
+        maxpages = max_pages or 0  # pdfminer treats 0 as "no limit"
+
+        pages: dict = {}
+        pages_read = 0
+        with open(pdf_path, "rb") as in_file:
+            for page in extract_pages(in_file, laparams=LAParams(**la_params), maxpages=maxpages):
+                pages_read += 1
+                elements = [element for element in page if isinstance(element, LTTextBox)]
+                # With all_texts=True we also pull text nested inside figures.
+                for figure in (element for element in page if isinstance(element, LTFigure)):
+                    elements += [element for element in figure if isinstance(element, LTTextBox)]
+                if not elements:
+                    continue
+                pages[page.pageid] = Page(width=page.width, height=page.height, elements=elements)
+
+        return PDFDocument(pages=pages, pdf_file_path=str(pdf_path)), pages_read
 
     @staticmethod
     def _normalize_text(text: str) -> str:
@@ -147,15 +180,21 @@ class DoclingParser:
         finally:
             pdf_doc.close()
 
-    def _validate_pdf(self, pdf_path: Path) -> bool:
+    def _validate_pdf(self, pdf_path: Path) -> Optional[int]:
         """
-        Comprehensive PDF validation including size and page limits.
+        Validate the PDF and report its page count.
+
+        Only hard failures raise ``PDFValidationError``: empty file, missing PDF
+        header, or file size over the configured limit. The page count is
+        *returned* rather than enforced, so that papers longer than ``max_pages``
+        are truncated to the first ``max_pages`` pages (see :meth:`parse_pdf`)
+        instead of being dropped entirely.
 
         Args:
             pdf_path: Path to PDF file
 
         Returns:
-            True if PDF appears valid and within limits, False otherwise
+            The PDF page count, or ``None`` if it could not be determined.
         """
         try:
             # Check file exists and is not empty
@@ -180,15 +219,8 @@ class DoclingParser:
                     logger.error(f"File does not have PDF header: {pdf_path}")
                     raise PDFValidationError(f"File does not have PDF header: {pdf_path}")
 
-            # Check page count limit when an optional backend is available.
-            actual_pages = self._get_page_count(pdf_path)
-            if actual_pages is not None and actual_pages > self.max_pages:
-                logger.warning(
-                    f"PDF has {actual_pages} pages, exceeding limit of {self.max_pages} pages. Skipping processing to avoid performance issues."
-                )
-                raise PDFValidationError(f"PDF has too many pages: {actual_pages} > {self.max_pages}")
-
-            return True
+            # Report (do not enforce) the page count; long papers are truncated, not skipped.
+            return self._get_page_count(pdf_path)
 
         except PDFValidationError:
             raise
@@ -198,26 +230,38 @@ class DoclingParser:
 
     async def parse_pdf(self, pdf_path: Path) -> Optional[PdfContent]:
         """
-        Parse PDF using py-pdf-parser as fallback parser.
-        Limited to 20 pages to avoid memory issues with large papers.
+        Parse PDF using py-pdf-parser.
+
+        Papers longer than ``max_pages`` are not skipped: the first ``max_pages``
+        pages are parsed and the result is flagged as ``truncated`` (both as a
+        first-class field on :class:`PdfContent` and inside ``metadata``) so the
+        rest of the pipeline can record whether the stored content is complete.
 
         Args:
             pdf_path: Path to PDF file
 
         Returns:
-            PdfContent object or None if parsing failed
+            PdfContent object or None if parsing was skipped (e.g. file too large)
         """
         try:
-            # Validate PDF first (includes size and page limits)
-            self._validate_pdf(pdf_path)
+            # Validate PDF and learn its page count (does not enforce the page limit).
+            pages_total = self._validate_pdf(pdf_path)
 
             # Warm up models on first use
             self._warm_up_models()
 
-            document = self._load_document(pdf_path)
+            document, pages_processed = self._load_document(pdf_path, max_pages=self.max_pages)
             elements = [element for element in document.elements if self._normalize_text(element.text())]
             raw_text = "\n".join(self._normalize_text(element.text()) for element in elements)
             sections = self._build_sections(elements)
+
+            # The content is partial when the PDF had more pages than we read.
+            truncated = pages_total is not None and pages_total > self.max_pages
+            if truncated:
+                logger.warning(
+                    f"PDF {pdf_path.name} has {pages_total} pages; parsed first {pages_processed} "
+                    f"(max_pages={self.max_pages}). Stored content is partial (truncated=True)."
+                )
 
             # Focus on what arXiv API doesn't provide: structured full text content only.
             return PdfContent(
@@ -227,14 +271,26 @@ class DoclingParser:
                 raw_text=raw_text,
                 references=[],
                 parser_used=ParserType.PY_PDF_PARSER,
-                metadata={"source": "py-pdf-parser", "note": "Content extracted from PDF, metadata comes from arXiv API"},
+                truncated=truncated,
+                pages_total=pages_total,
+                pages_processed=pages_processed,
+                metadata={
+                    "source": "py-pdf-parser",
+                    "note": "Content extracted from PDF, metadata comes from arXiv API",
+                    "complete": not truncated,
+                    "truncated": truncated,
+                    "pages_total": pages_total,
+                    "pages_processed": pages_processed,
+                    "max_pages": self.max_pages,
+                },
             )
 
         except PDFValidationError as e:
-            # Handle size/page limit validation errors gracefully by returning None
+            # Handle file-size limit gracefully by returning None; page-count is no
+            # longer a skip reason (long papers are truncated instead).
             error_msg = str(e).lower()
-            if "too large" in error_msg or "too many pages" in error_msg:
-                logger.info(f"Skipping PDF processing due to size/page limits: {e}")
+            if "too large" in error_msg:
+                logger.info(f"Skipping PDF processing due to file-size limit: {e}")
                 return None
             else:
                 # Re-raise other validation errors (corrupted files, etc.)
@@ -248,8 +304,6 @@ class DoclingParser:
             # Add specific handling for common issues
             error_msg = str(e).lower()
 
-            # Note: Page and size limit checks are now handled in _validate_pdf method
-
             if "not valid" in error_msg:
                 logger.error("PDF appears to be corrupted or not a valid PDF file")
                 raise PDFParsingException(f"PDF appears to be corrupted or invalid: {pdf_path}")
@@ -259,10 +313,5 @@ class DoclingParser:
             elif "memory" in error_msg or "ram" in error_msg:
                 logger.error("Out of memory - PDF may be too large or complex")
                 raise PDFParsingException(f"Out of memory processing PDF: {pdf_path}")
-            elif "max_num_pages" in error_msg or "page" in error_msg:
-                logger.error(f"PDF processing issue likely related to page limits (current limit: {self.max_pages} pages)")
-                raise PDFParsingException(
-                    f"PDF processing failed, possibly due to page limit ({self.max_pages} pages). Error: {e}"
-                )
             else:
                 raise PDFParsingException(f"Failed to parse PDF with py-pdf-parser: {e}")

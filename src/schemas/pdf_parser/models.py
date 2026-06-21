@@ -43,6 +43,16 @@ class PdfContent(BaseModel):
     raw_text: str = Field(..., description="Full extracted text")
     references: List[str] = Field(default_factory=list, description="References")
     parser_used: ParserType = Field(..., description="Parser used for extraction")
+    truncated: bool = Field(
+        default=False,
+        description="True if only the first `max_pages` pages were parsed because the PDF exceeded the page limit",
+    )
+    pages_total: Optional[int] = Field(
+        default=None, description="Total page count of the source PDF (None if it could not be determined)"
+    )
+    pages_processed: Optional[int] = Field(
+        default=None, description="Number of pages actually read and parsed"
+    )
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Parser metadata")
 
 
