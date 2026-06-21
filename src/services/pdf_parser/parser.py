@@ -46,9 +46,13 @@ class PDFParserService:
             if result:
                 logger.info(f"Parsed {pdf_path.name}")
                 return result
-            else:
-                logger.error(f"PDF parsing returned no result for {pdf_path.name}")
-                raise PDFParsingException(f"PDF parsing returned no result for {pdf_path.name}")
+
+            # docling returns None to signal a deliberate skip (e.g. the file is
+            # over the size limit), not a parse failure. Propagate None so the
+            # caller stores the paper with metadata only instead of recording it
+            # as a pipeline error.
+            logger.info(f"Skipped PDF parsing for {pdf_path.name} (over limit); storing metadata only")
+            return None
 
         except (PDFValidationError, PDFParsingException):
             raise
