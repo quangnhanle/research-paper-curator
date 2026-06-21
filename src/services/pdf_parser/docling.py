@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 from pathlib import Path
@@ -77,6 +78,22 @@ class DoclingParser:
                 pages[page.pageid] = Page(width=page.width, height=page.height, elements=elements)
 
         return PDFDocument(pages=pages, pdf_file_path=str(pdf_path)), pages_read
+
+    def _extract_content(self, pdf_path: Path) -> tuple[str, list[PaperSection], int]:
+        """Synchronous, CPU-bound text extraction.
+
+        pdfminer parsing and section building are blocking and CPU-heavy, so this
+        runs in a worker thread (see :meth:`parse_pdf`) to keep the event loop free
+        for concurrent downloads.
+
+        Returns:
+            Tuple of (raw_text, sections, number of pages actually read).
+        """
+        document, pages_processed = self._load_document(pdf_path, max_pages=self.max_pages)
+        elements = [element for element in document.elements if self._normalize_text(element.text())]
+        raw_text = "\n".join(self._normalize_text(element.text()) for element in elements)
+        sections = self._build_sections(elements)
+        return raw_text, sections, pages_processed
 
     @staticmethod
     def _normalize_text(text: str) -> str:
@@ -250,10 +267,9 @@ class DoclingParser:
             # Warm up models on first use
             self._warm_up_models()
 
-            document, pages_processed = self._load_document(pdf_path, max_pages=self.max_pages)
-            elements = [element for element in document.elements if self._normalize_text(element.text())]
-            raw_text = "\n".join(self._normalize_text(element.text()) for element in elements)
-            sections = self._build_sections(elements)
+            # Offload the blocking, CPU-bound extraction to a worker thread so the
+            # event loop stays free and concurrent PDF downloads keep progressing.
+            raw_text, sections, pages_processed = await asyncio.to_thread(self._extract_content, pdf_path)
 
             # The content is partial when the PDF had more pages than we read.
             truncated = pages_total is not None and pages_total > self.max_pages
