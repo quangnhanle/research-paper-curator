@@ -8,7 +8,7 @@ from .parser import PDFParserService
 @lru_cache(maxsize=1)
 def make_pdf_parser_service() -> PDFParserService:
     """
-    Factory function to create a PDF parser service using py-pdf-parser.
+    Factory function to create a PDF parser service using PyMuPDF.
     Uses @lru_cache for automatic memoization to avoid recreating parser state.
 
     Configuration is loaded from centralized settings (src/config.py).
@@ -23,8 +23,6 @@ def make_pdf_parser_service() -> PDFParserService:
     return PDFParserService(
         max_pages=settings.pdf_parser.max_pages,
         max_file_size_mb=settings.pdf_parser.max_file_size_mb,
-        do_ocr=settings.pdf_parser.do_ocr,
-        do_table_structure=settings.pdf_parser.do_table_structure,
     )
 
 

@@ -9,6 +9,7 @@ class ParserType(str, Enum):
 
     DOCLING = "docling"
     PY_PDF_PARSER = "py_pdf_parser"
+    PYMUPDF = "pymupdf"
     GROBID = "grobid"  # For future use
 
 
