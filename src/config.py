@@ -62,15 +62,13 @@ class PDFParserSettings(BaseConfigSettings):
     )
 
     # Papers longer than max_pages are truncated to the first max_pages pages
-    # (not skipped). pdfminer only reads up to this many pages, so this also
+    # (not skipped). PyMuPDF only reads up to this many pages, so this also
     # bounds parser memory/time. Override via PDF_PARSER__MAX_PAGES.
     max_pages: int = 50
-    # Parse memory/time is now bounded by max_pages (pdfminer only reads that
+    # Parse memory/time is now bounded by max_pages (PyMuPDF only reads that
     # many pages), so file size mainly affects download. Override via
     # PDF_PARSER__MAX_FILE_SIZE_MB.
     max_file_size_mb: int = 50
-    do_ocr: bool = False
-    do_table_structure: bool = True
 
 
 class ChunkingSettings(BaseConfigSettings):

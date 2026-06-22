@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 from opensearchpy import OpenSearch
 from src.config import Settings
 
-from .index_config_hybrid import HYBRID_RRF_PIPELINE, ARXIV_PAPERS_CHUNKS_MAPPING
+from .index_config_hybrid import ARXIV_PAPERS_CHUNKS_MAPPING, HYBRID_RRF_PIPELINE
 from .query_builder import QueryBuilder
 
 logger = logging.getLogger(__name__)

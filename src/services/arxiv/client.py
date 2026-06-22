@@ -85,8 +85,10 @@ class ArxivClient:
         # Add date filtering if provided
         if from_date or to_date:
             # Convert dates to arXiv format (YYYYMMDDHHMM) - use 0000 for start of day, 2359 for end
-            date_from = f"{from_date}0000" if from_date else "*"
-            date_to = f"{to_date}2359" if to_date else "*"
+            date_from = "202606150000" if from_date else "*"
+            date_to = "202606152359" if to_date else "*"
+            # date_from = f"{from_date}0000" if from_date else "*"
+            # date_to = f"{to_date}2359" if to_date else "*"
             # Use correct arXiv API syntax with + symbols
             search_query += f" AND submittedDate:[{date_from}+TO+{date_to}]"
 
