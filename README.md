@@ -14,9 +14,23 @@
   <img src="https://img.shields.io/badge/Docker-Compose-blue.svg" alt="Docker">
 </p>
 
-<p align="center">
-  <img src="static/mother_of_ai_project_rag_architecture.gif" alt="RAG Architecture" width="700">
-</p>
+```mermaid
+flowchart LR
+    arXiv["arXiv<br/>cs.AI papers"] --> ING["Ingestion<br/>Apache Airflow"]
+    ING --> PG[("PostgreSQL")]
+    ING --> OS[("OpenSearch<br/>BM25 + kNN")]
+    PG --> SRV["FastAPI<br/>Agentic RAG"]
+    OS --> SRV
+    SRV --> LLM["LLM"]
+    SRV --> CL["REST API · Gradio · Telegram"]
+
+    classDef src fill:#e3f2fd,stroke:#1976d2,color:#0d47a1
+    classDef store fill:#ede7f6,stroke:#5e35b1,color:#311b92
+    classDef svc fill:#e8f5e9,stroke:#388e3c,color:#1b5e20
+    class arXiv src
+    class PG,OS store
+    class ING,SRV,LLM,CL svc
+```
 
 ---
 
@@ -34,19 +48,21 @@ Everything runs locally via Docker Compose, with production overrides, self-host
 
 ```mermaid
 flowchart LR
-    subgraph Ingestion["Ingestion (Apache Airflow)"]
-        A[arXiv API<br/>cs.AI] --> B[PDF download<br/>async, retrying]
-        B --> C[PyMuPDF parse<br/>text + sections]
-        C --> D[Chunk + Jina embed]
+    subgraph Ingestion["Ingestion — Apache Airflow"]
+        direction TB
+        A["arXiv API<br/>cs.AI"] --> B["PDF download<br/>async · retrying"]
+        B --> C["PyMuPDF parse<br/>text · sections · refs"]
+        C --> D["Chunk + Jina embed"]
     end
 
-    D --> PG[(PostgreSQL<br/>papers + full text)]
-    D --> OS[(OpenSearch<br/>hybrid index<br/>BM25 + kNN)]
+    D --> PG[("PostgreSQL<br/>papers + full text")]
+    D --> OS[("OpenSearch<br/>hybrid index<br/>BM25 + kNN")]
 
-    subgraph Serving["Serving (FastAPI)"]
-        API[REST API]
-        AG[Agentic RAG<br/>LangGraph]
-        LLM[LLM<br/>OpenAI-compatible]
+    subgraph Serving["Serving — FastAPI"]
+        direction TB
+        API["REST API"]
+        AG["Agentic RAG<br/>LangGraph"]
+        LLM["LLM<br/>OpenAI-compatible"]
     end
 
     OS --> AG
@@ -54,16 +70,22 @@ flowchart LR
     AG --> LLM
     API --> AG
 
-    subgraph Clients
-        UI[Gradio UI]
-        TG[Telegram bot]
+    subgraph Clients["Interfaces"]
+        direction TB
+        UI["Gradio UI"]
+        TG["Telegram bot"]
     end
     UI --> API
     TG --> AG
 
-    Redis[(Redis cache)] --- API
-    LF[Langfuse + ClickHouse<br/>observability] --- Serving
+    Redis[("Redis cache")] --- API
+    LF["Langfuse + ClickHouse<br/>observability"] --- Serving
     Ingestion -. digest .-> TG
+
+    classDef store fill:#ede7f6,stroke:#5e35b1,color:#311b92
+    classDef obs fill:#fff3e0,stroke:#f57c00,color:#e65100
+    class PG,OS,Redis store
+    class LF obs
 ```
 
 **Two main flows:**
@@ -71,9 +93,47 @@ flowchart LR
 1. **Ingestion (batch, orchestrated by Airflow)** — On a weekday schedule, fetch new papers → download PDFs concurrently → parse with PyMuPDF → store metadata + full text in PostgreSQL → chunk, embed with Jina, and index into OpenSearch → generate a daily report → push a Telegram digest.
 2. **Serving (online, FastAPI)** — Hybrid search + RAG answering, including a LangGraph agentic workflow, streaming responses, a Gradio UI, and a Telegram bot. Redis caches responses, and Langfuse traces every LLM call.
 
-<p align="center">
-  <img src="static/week2_data_ingestion_flow.png" alt="Data ingestion pipeline" width="800">
-</p>
+### Ingestion pipeline (Airflow DAG)
+
+Scheduled Monday–Friday at 06:00 UTC (`arxiv_paper_ingestion`):
+
+```mermaid
+flowchart LR
+    S["setup"] --> F["fetch_daily_papers"] --> I["index_papers_hybrid"] --> R["generate_daily_report"] --> N["notify_telegram"] --> C["cleanup"]
+
+    F -.-> Fd["arXiv API → download PDFs<br/>→ PyMuPDF parse → PostgreSQL"]
+    I -.-> Id["chunk → Jina embed<br/>→ OpenSearch hybrid index"]
+
+    classDef task fill:#e8f5e9,stroke:#388e3c,color:#1b5e20
+    classDef note fill:#f5f5f5,stroke:#bdbdbd,color:#424242
+    class S,F,I,R,N,C task
+    class Fd,Id note
+```
+
+### Agentic RAG workflow (LangGraph)
+
+The `/ask-agentic` endpoint runs a self-correcting state machine:
+
+```mermaid
+flowchart TD
+    Q([Query]) --> G{"Guardrail<br/>score 0-100"}
+    G -->|below threshold| OOS["Out of scope<br/>reject"]
+    G -->|in scope| RET["Retrieve<br/>hybrid / BM25"]
+    RET --> GR{"Grade documents<br/>relevant?"}
+    GR -->|yes| GEN["Generate answer<br/>+ sources"]
+    GR -->|no · attempts left| RW["Rewrite query"]
+    RW --> RET
+    GR -->|no · out of attempts| GEN
+    OOS --> E([End])
+    GEN --> E
+
+    classDef decision fill:#fff3e0,stroke:#f57c00,color:#e65100
+    classDef action fill:#e8f5e9,stroke:#388e3c,color:#1b5e20
+    classDef stop fill:#ffebee,stroke:#c62828,color:#b71c1c
+    class G,GR decision
+    class RET,GEN,RW action
+    class OOS stop
+```
 
 ---
 
